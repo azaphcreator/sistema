@@ -396,13 +396,62 @@ let wake=null;async function keepAwake(on){try{if(on&&!wake&&navigator.wakeLock)
 /* ================= voice ================= */
 let cmds=[];
 function setCmds(list,hint){cmds=list;Voice.hint=hint||"";Voice.pill()}
+/* On-device speech (Whisper tiny, runs in the page). Used on iPhone, where Safari's own speech service is often refused. */
+const TF="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js";
+const Local={asr:null,loading:null,stream:null,ctx:null,proc:null,busy:false,pending:null,n:0,pct:0,
+  load(){
+    if(this.asr)return Promise.resolve();
+    if(!this.loading){
+      const files={};
+      this.loading=(async()=>{
+        const T=await import(TF);T.env.allowLocalModels=false;try{T.env.backends.onnx.wasm.numThreads=1}catch(e){}
+        this.asr=await T.pipeline("automatic-speech-recognition","Xenova/whisper-tiny",{dtype:"q8",device:"wasm",
+          progress_callback:p=>{if(p.status==="progress"&&p.total){files[p.file]=[p.loaded,p.total];let a=0,b=0;for(const k in files){a+=files[k][0];b+=files[k][1]}this.pct=Math.round(a/b*100);Voice.pill()}}});
+      })();
+      this.loading.catch(()=>{this.loading=null});
+    }
+    return this.loading;
+  },
+  async start(onSeg){ // call from a tap: the audio context is created before any await
+    const ctx=new(window.AudioContext||window.webkitAudioContext)();this.ctx=ctx;ctx.resume();
+    this.stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    const src=ctx.createMediaStreamSource(this.stream),proc=ctx.createScriptProcessor(4096,1,1),mute=ctx.createGain();mute.gain.value=0;
+    src.connect(proc);proc.connect(mute);mute.connect(ctx.destination);this.proc=proc;
+    const sr=ctx.sampleRate,fms=4096/sr*1000;let noise=.004,speaking=false,buf=[],pre=[],sil=0,dur=0;
+    proc.onaudioprocess=e=>{
+      const d=new Float32Array(e.inputBuffer.getChannelData(0));let q=0;for(let i=0;i<d.length;i++)q+=d[i]*d[i];const rms=Math.sqrt(q/d.length);
+      const th=Math.max(noise*3.2,.012);
+      if(!speaking){pre.push(d);if(pre.length>4)pre.shift();if(rms>th){speaking=true;buf=pre.slice();pre=[];sil=0;dur=0}else noise=noise*.95+rms*.05}
+      if(speaking){buf.push(d);dur+=fms;sil=rms<th?sil+fms:0;
+        if(sil>650||dur>4000){speaking=false;const c=buf;buf=[];if(dur-sil>220)onSeg(to16k(merge(c),sr))}}
+    };
+  },
+  stop(){try{this.proc&&this.proc.disconnect()}catch(e){}this.proc=null;if(this.stream)this.stream.getTracks().forEach(t=>t.stop());this.stream=null;if(this.ctx)this.ctx.close().catch(()=>{});this.ctx=null},
+  async hear(audio){
+    if(!this.asr)return;
+    if(this.busy){this.pending=audio;return}
+    this.busy=true;
+    try{const out=await this.asr(audio,{language:"portuguese",task:"transcribe"});const t=(out&&out.text||"").trim();if(t)Voice.text(t,"L"+(++this.n))}catch(e){}
+    this.busy=false;
+    if(this.pending){const a=this.pending;this.pending=null;this.hear(a)}
+  }
+};
+function merge(cs){let n=0;for(const c of cs)n+=c.length;const o=new Float32Array(n);let i=0;for(const c of cs){o.set(c,i);i+=c.length}return o}
+function to16k(x,sr){if(sr===16000)return x;const r=sr/16000,n=Math.floor(x.length/r),o=new Float32Array(n);for(let i=0;i<n;i++){const a=Math.floor(i*r),b=Math.min(x.length,Math.floor((i+1)*r));let s=0;for(let j=a;j<b;j++)s+=x[j];o[i]=s/Math.max(1,b-a)}return o}
+const IOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
 const Voice={on:false,kind:null,SR:null,rec:null,dict:null,sess:0,handled:new Set(),last:0,hint:"",heard:"",
-  init(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(SR){this.kind="web";this.SR=SR}this.pill();if(!this.kind)this.tryDict()},
+  init(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition,canLocal=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.WebAssembly)&&!/claude/.test(location.hostname);if(IOS&&canLocal)this.kind="local";else if(SR){this.kind="web";this.SR=SR}else if(canLocal)this.kind="local";this.canLocal=canLocal;this.pill();if(!this.kind)this.tryDict()},
   async tryDict(){const d=await claudeUse("dictation");if(!d||this.kind)return;this.dict=d;this.kind="dict";let n=0;
     d.onPartial(e=>this.text(e.text,"d"+n));d.onFinal(e=>{this.text(e.text,"d"+n);n++});
     d.onState(e=>{if(e.state==="idle"&&this.on){this.on=false;this.pill()}});this.pill()},
   start(auto){
     if(!this.kind)return;this.err="";this.on=true;S.voice=true;saveLocal();
+    if(this.kind==="local"){
+      if(Local.stream){this.pill();return}
+      Local.start(a=>{if(this.on)Local.hear(a)}).then(()=>{this.pill();return Local.load()}).then(()=>this.pill())
+        .catch(e=>{Local.stop();this.on=false;this.err=e&&e.name==="NotAllowedError"?"Microfone negado: aA › Ajustes do Site":"Não consegui carregar a voz. Verifique a internet.";this.pill()});
+      this.pill();return;
+    }
     if(this.kind==="web"){
       const ios=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
       try{const r=new this.SR();r.lang="pt-BR";r.continuous=!ios;r.interimResults=true;r.maxAlternatives=1;const sess=++this.sess;let heard=false;
@@ -411,6 +460,7 @@ const Voice={on:false,kind:null,SR:null,rec:null,dict:null,sess:0,handled:new Se
           const e=ev.error;if(e==="no-speech"||e==="aborted")return;
           if(auto&&(e==="not-allowed"||e==="service-not-allowed")){ // iOS refused a restart without a tap: wait for the next tap
             this.on=false;this.rec=null;this.err="Toque na tela para eu ouvir de novo";this.pill();return}
+          if(e==="service-not-allowed"&&this.canLocal){this.on=false;this.rec=null;this.kind="local";this.err="Voz do Sistema pronta: toque no microfone";this.pill();return}
           const why={"not-allowed":"Microfone negado: aA › Ajustes do Site › Microfone",
             "service-not-allowed":navigator.standalone?"Pelo ícone não funciona: abra no Safari":"Fala bloqueada: ative Ditado e Siri nos Ajustes",
             "audio-capture":"Microfone em uso por outro app","network":"Sem internet para reconhecer a voz"}[e]||"Erro de voz";
@@ -421,16 +471,18 @@ const Voice={on:false,kind:null,SR:null,rec:null,dict:null,sess:0,handled:new Se
     }else this.dict.start({language:"pt-BR"}).catch(()=>{this.on=false;this.pill()});
     this.pill();
   },
-  stop(){this.on=false;S.voice=false;saveLocal();if(this.rec){const r=this.rec;this.rec=null;try{r.stop()}catch(e){}}if(this.dict)this.dict.stop().catch(()=>{});this.pill()},
+  stop(){this.on=false;S.voice=false;saveLocal();Local.stop();if(this.rec){const r=this.rec;this.rec=null;try{r.stop()}catch(e){}}if(this.dict)this.dict.stop().catch(()=>{});this.pill()},
   text(t,key){this.heard=t.trim();this.pill();if(this.handled.has(key)||Date.now()-this.last<900)return;const n=norm(t);for(const[re,fn]of cmds){if(re.test(n)){this.handled.add(key);this.last=Date.now();fn();return}}},
   pill(msg){const el=$("#mic"),tx=$("#micTx");el.classList.toggle("on",this.on);el.classList.toggle("off",!this.kind);
     if(!this.kind){tx.textContent=/claude/.test(location.hostname)?"Voz só no endereço do GitHub":"Voz indisponível: abra no Safari";return}if(msg){tx.textContent=msg;return}
     if(!this.on&&this.err){tx.textContent=this.err;return}
+    if(this.on&&this.kind==="local"&&!Local.asr){tx.textContent=Local.stream?"Baixando a voz do Sistema… "+Local.pct+"% (só na 1ª vez)":"Liberando o microfone…";return}
+    if(this.on&&this.kind==="local"&&Local.busy&&!this.heard){tx.textContent="Entendendo…";return}
     tx.textContent=this.on?(this.heard?"“"+this.heard.slice(-34)+"”":"Ouvindo… "+this.hint):"Toque para ativar a voz";
     el.setAttribute("aria-label",this.on?"Desligar comandos de voz":"Ativar comandos de voz")}
 };
 $("#mic").addEventListener("click",()=>{audioInit();if(!Voice.kind)return;Voice.on?Voice.stop():Voice.start()});
-document.addEventListener("pointerdown",e=>{audioInit();if(S.voice&&!Voice.on&&Voice.kind&&!e.target.closest("#mic"))Voice.start()},{capture:true});
+document.addEventListener("pointerdown",e=>{audioInit();if(Local.ctx&&Local.ctx.state!=="running")Local.ctx.resume();if(S.voice&&!Voice.on&&Voice.kind&&!e.target.closest("#mic"))Voice.start()},{capture:true});
 
 /* ================= windows ================= */
 let cur=null;
@@ -496,19 +548,19 @@ async function home(){
   const d=today(),k=dkey();
   if(S.done[k]){
     const r=await notify({lines:["A missão diária de hoje foi concluída.","Uma nova missão chega à meia-noite."],
-      buttons:[{label:"Status",v:"s",voice:/\bstatus\b/},{label:"Missão",v:"q",voice:/\b(abrir|abra|missao)\b/}],hint:"diga “status” ou “abrir”"});
+      buttons:[{label:"Status",v:"s",voice:/\be?status\b/},{label:"Missão",v:"q",voice:/\b(abrir|abra|missao)\b/}],hint:"diga “status” ou “abrir”"});
     r.v==="s"?openStatus():openQuest();return;
   }
   const started=Object.keys(GOALS).some(g=>d[g]>0);
   const r=await notify({lines:["[Missão diária: treinar para se tornar um combatente formidável] "+(started?"em andamento.":"chegou.")],
-    buttons:[{label:"Abrir",v:"q",voice:/\b(abrir|abra|abre|mostrar|mostre)\b/},{label:"Status",v:"s",voice:/\bstatus\b/}],hint:"diga “abrir”"});
+    buttons:[{label:"Abrir",v:"q",voice:/\b(abrir|abra|abre|mostrar|mostre)\b/},{label:"Status",v:"s",voice:/\be?status\b/}],hint:"diga “abrir”"});
   r.v==="s"?openStatus():openQuest();
 }
 
 /* ================= quest ================= */
 function openQuest(){
   stopCam();show("quest");SFX.open();renderQuest();
-  setCmds([[/\b(fechar|feche|minimizar|sair)\b/,home],[/\bstatus\b/,openStatus],[/\bflex/,()=>openEx("push")],[/\babdomina/,()=>openEx("sit")],[/\bagacha/,()=>openEx("squat")],[/\bcorr/,()=>openEx("km")]],"diga “flexões”, “status” ou “fechar”");
+  setCmds([[/\b(fechar|feche|minimizar|sair)\b/,home],[/\be?status\b/,openStatus],[/\bflex/,()=>openEx("push")],[/\babdomina/,()=>openEx("sit")],[/\bagacha/,()=>openEx("squat")],[/\bcorr/,()=>openEx("km")]],"diga “flexões”, “status” ou “fechar”");
 }
 function renderQuest(){
   const d=today();
