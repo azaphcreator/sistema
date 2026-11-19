@@ -401,26 +401,36 @@ const Voice={on:false,kind:null,SR:null,rec:null,dict:null,sess:0,handled:new Se
   async tryDict(){const d=await claudeUse("dictation");if(!d||this.kind)return;this.dict=d;this.kind="dict";let n=0;
     d.onPartial(e=>this.text(e.text,"d"+n));d.onFinal(e=>{this.text(e.text,"d"+n);n++});
     d.onState(e=>{if(e.state==="idle"&&this.on){this.on=false;this.pill()}});this.pill()},
-  start(){
-    if(!this.kind)return;this.on=true;S.voice=true;saveLocal();
+  start(auto){
+    if(!this.kind)return;this.err="";this.on=true;S.voice=true;saveLocal();
     if(this.kind==="web"){
-      try{const r=new this.SR();r.lang="pt-BR";r.continuous=true;r.interimResults=true;const sess=++this.sess;
-        r.onresult=ev=>{for(let i=ev.resultIndex;i<ev.results.length;i++)this.text(ev.results[i][0].transcript,sess+":"+i)};
-        r.onerror=ev=>{if(ev.error==="not-allowed"||ev.error==="service-not-allowed"){this.on=false;S.voice=false;saveLocal();this.pill("Microfone bloqueado nas permissões")}};
-        r.onend=()=>{if(this.on&&this.rec===r)setTimeout(()=>{if(this.on&&this.rec===r){try{r.start()}catch(e){}}},250)};
-        this.rec=r;r.start()}catch(e){this.on=false}
+      const ios=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+      try{const r=new this.SR();r.lang="pt-BR";r.continuous=!ios;r.interimResults=true;r.maxAlternatives=1;const sess=++this.sess;let heard=false;
+        r.onresult=ev=>{heard=true;for(let i=ev.resultIndex;i<ev.results.length;i++)this.text(ev.results[i][0].transcript,sess+":"+i)};
+        r.onerror=ev=>{
+          const e=ev.error;if(e==="no-speech"||e==="aborted")return;
+          if(auto&&(e==="not-allowed"||e==="service-not-allowed")){ // iOS refused a restart without a tap: wait for the next tap
+            this.on=false;this.rec=null;this.err="Toque na tela para eu ouvir de novo";this.pill();return}
+          const why={"not-allowed":"Microfone negado: aA › Ajustes do Site › Microfone",
+            "service-not-allowed":navigator.standalone?"Pelo ícone não funciona: abra no Safari":"Fala bloqueada: ative Ditado e Siri nos Ajustes",
+            "audio-capture":"Microfone em uso por outro app","network":"Sem internet para reconhecer a voz"}[e]||"Erro de voz";
+          this.on=false;S.voice=false;saveLocal();this.rec=null;this.err=why+" ("+e+")";this.pill();
+        };
+        r.onend=()=>{if(this.on&&this.rec===r){this.rec=null;setTimeout(()=>{if(this.on&&!this.rec)this.start(true)},150)}};
+        this.rec=r;r.start()}catch(e){this.on=false;this.rec=null;this.err=auto?"Toque na tela para eu ouvir de novo":"Erro ao iniciar a voz ("+(e&&e.name||"?")+")"}
     }else this.dict.start({language:"pt-BR"}).catch(()=>{this.on=false;this.pill()});
     this.pill();
   },
   stop(){this.on=false;S.voice=false;saveLocal();if(this.rec){const r=this.rec;this.rec=null;try{r.stop()}catch(e){}}if(this.dict)this.dict.stop().catch(()=>{});this.pill()},
   text(t,key){this.heard=t.trim();this.pill();if(this.handled.has(key)||Date.now()-this.last<900)return;const n=norm(t);for(const[re,fn]of cmds){if(re.test(n)){this.handled.add(key);this.last=Date.now();fn();return}}},
   pill(msg){const el=$("#mic"),tx=$("#micTx");el.classList.toggle("on",this.on);el.classList.toggle("off",!this.kind);
-    if(!this.kind){tx.textContent="Voz indisponível aqui";return}if(msg){tx.textContent=msg;return}
+    if(!this.kind){tx.textContent=/claude/.test(location.hostname)?"Voz só no endereço do GitHub":"Voz indisponível: abra no Safari";return}if(msg){tx.textContent=msg;return}
+    if(!this.on&&this.err){tx.textContent=this.err;return}
     tx.textContent=this.on?(this.heard?"“"+this.heard.slice(-34)+"”":"Ouvindo… "+this.hint):"Toque para ativar a voz";
     el.setAttribute("aria-label",this.on?"Desligar comandos de voz":"Ativar comandos de voz")}
 };
 $("#mic").addEventListener("click",()=>{audioInit();if(!Voice.kind)return;Voice.on?Voice.stop():Voice.start()});
-document.addEventListener("pointerdown",()=>{audioInit();if(S.voice&&!Voice.on&&Voice.kind)Voice.start()},{capture:true});
+document.addEventListener("pointerdown",e=>{audioInit();if(S.voice&&!Voice.on&&Voice.kind&&!e.target.closest("#mic"))Voice.start()},{capture:true});
 
 /* ================= windows ================= */
 let cur=null;
