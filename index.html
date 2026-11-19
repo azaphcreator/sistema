@@ -130,7 +130,7 @@ button:focus-visible{outline:2px solid var(--edge);outline-offset:3px}
 /* ---------- camera HUD (full screen) ---------- */
 #cfs{position:fixed;inset:0;z-index:10;background:#000}
 #cfs[hidden]{display:none}
-#cfs video,#cfs canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#cfs video,#cfs canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 #cfs video{filter:saturate(.55) brightness(.75) contrast(1.05)}
 #cfs .mirror{transform:scaleX(-1)}
 #cfs .tint{position:absolute;inset:0;pointer-events:none;background:
@@ -439,6 +439,13 @@ const Local={asr:null,loading:null,stream:null,ctx:null,proc:null,busy:false,pen
 function merge(cs){let n=0;for(const c of cs)n+=c.length;const o=new Float32Array(n);let i=0;for(const c of cs){o.set(c,i);i+=c.length}return o}
 function to16k(x,sr){if(sr===16000)return x;const r=sr/16000,n=Math.floor(x.length/r),o=new Float32Array(n);for(let i=0;i<n;i++){const a=Math.floor(i*r),b=Math.min(x.length,Math.floor((i+1)*r));let s=0;for(let j=a;j<b;j++)s+=x[j];o[i]=s/Math.max(1,b-a)}return o}
 const IOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
+const VOCAB=["abrir","abra","status","fechar","voltar","sair","sim","nao","ok","aceito","aceitar","missao","flexoes","abdominais","agachamentos","corrida","correr","iniciar","comecar","camera","cronometro","certo","entendi","minimizar","mostrar","forca","agilidade"];
+function lev(a,b){const m=a.length,n=b.length;if(Math.abs(m-n)>2)return 9;let p=Array.from({length:n+1},(_,i)=>i);for(let i=1;i<=m;i++){const c=[i];for(let j=1;j<=n;j++)c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));p=c}return p[n]}
+function fuzz(n){const w=n.replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(Boolean),out=[];
+  for(let i=0;i<w.length;i++){let best=null,bd=9,used=1;const cs=[w[i]];if(i+1<w.length)cs.push(w[i]+w[i+1]);
+    cs.forEach((c,ci)=>{for(const v of VOCAB){const tol=v.length<=3?0:v.length<=5?1:2,d=lev(c,v);if(d<=tol&&d<bd){bd=d;best=v;used=ci+1}}});
+    if(best){out.push(best);i+=used-1}else out.push(w[i])}
+  return out.join(" ")}
 const Voice={on:false,kind:null,SR:null,rec:null,dict:null,sess:0,handled:new Set(),last:0,hint:"",heard:"",
   init(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition,canLocal=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.WebAssembly)&&!/claude/.test(location.hostname);if(IOS&&canLocal)this.kind="local";else if(SR){this.kind="web";this.SR=SR}else if(canLocal)this.kind="local";this.canLocal=canLocal;this.pill();if(!this.kind)this.tryDict()},
   async tryDict(){const d=await claudeUse("dictation");if(!d||this.kind)return;this.dict=d;this.kind="dict";let n=0;
@@ -472,7 +479,7 @@ const Voice={on:false,kind:null,SR:null,rec:null,dict:null,sess:0,handled:new Se
     this.pill();
   },
   stop(){this.on=false;S.voice=false;saveLocal();Local.stop();if(this.rec){const r=this.rec;this.rec=null;try{r.stop()}catch(e){}}if(this.dict)this.dict.stop().catch(()=>{});this.pill()},
-  text(t,key){this.heard=t.trim();this.pill();if(this.handled.has(key)||Date.now()-this.last<900)return;const n=norm(t);for(const[re,fn]of cmds){if(re.test(n)){this.handled.add(key);this.last=Date.now();fn();return}}},
+  text(t,key){this.heard=t.trim();this.pill();if(this.handled.has(key)||Date.now()-this.last<900)return;const n=norm(t),f=fuzz(n);for(const[re,fn]of cmds){if(re.test(n)||re.test(f)){this.handled.add(key);this.last=Date.now();fn();return}}},
   pill(msg){const el=$("#mic"),tx=$("#micTx");el.classList.toggle("on",this.on);el.classList.toggle("off",!this.kind);
     if(!this.kind){tx.textContent=/claude/.test(location.hostname)?"Voz só no endereço do GitHub":"Voz indisponível: abra no Safari";return}if(msg){tx.textContent=msg;return}
     if(!this.on&&this.err){tx.textContent=this.err;return}
@@ -533,6 +540,10 @@ async function firstRun(){
   await notify({sound:"rank",lines:["Bem-vindo, Jogador "+S.name+".",[{t:"Rank atual: "},{t:"F",c:"y"}],"Complete as missões diárias para ganhar XP. Ao subir de nível, você recebe pontos de atributo."],buttons:[OK]});
 }
 function missedDays(){const t=dkey(),out=[];let k=S.lastSeen,g=0;while(k<t&&g<400){if(!S.done[k]&&k>=S.startDay)out.push(k);k=addDays(k,1);g++}S.lastSeen=t;return out}
+const ROUTES={missao:()=>openQuest(),status:()=>openStatus(),flexoes:()=>openEx("push"),abdominais:()=>openEx("sit"),agachamentos:()=>openEx("squat"),corrida:()=>openEx("km")};
+let startRoute=location.hash.slice(1);
+function clearHash(){try{history.replaceState(null,"",location.pathname+location.search)}catch(e){}}
+window.addEventListener("hashchange",()=>{const h=location.hash.slice(1);clearHash();if(S.accepted&&ROUTES[h]){SFX.notify();ROUTES[h]()}});
 async function home(){
   stopCam();
   if(!S.accepted)await firstRun();
@@ -545,6 +556,7 @@ async function home(){
       [{t:"−"+lost+" XP · sequência zerada",c:"r"}]],
       buttons:[{label:"Aceitar",v:1,voice:/\b(aceito|aceitar|ok|sim)\b/}],hint:"diga “aceito”"});
   }
+  if(startRoute){const rt=startRoute;startRoute="";clearHash();if(ROUTES[rt]){ROUTES[rt]();return}}
   const d=today(),k=dkey();
   if(S.done[k]){
     const r=await notify({lines:["A missão diária de hoje foi concluída.","Uma nova missão chega à meia-noite."],
@@ -574,9 +586,9 @@ $("#quest").addEventListener("click",e=>{const g=e.target.closest("[data-ex]");i
 /* ================= exercise ================= */
 let exKey=null;const SET={k:null,n:0,last:0};
 const TIPS={
-  push:"Apoie o celular no chão de pé, de lado para você, a uns 2 m. Corpo inteiro na tela, da cabeça aos pés.",
-  sit:"Deite de lado para a câmera, joelhos dobrados. Celular no chão a uns 2 m, pegando cabeça até os pés.",
-  squat:"Fique de lado para a câmera, a uns 2,5 m. Corpo inteiro na tela."
+  push:"Celular em pé no chão, uns 1,5 m à frente da sua cabeça, câmera virada para você. Ombros e mãos precisam aparecer.",
+  sit:"Celular em pé perto dos seus pés, uns 1 m, virado para você. Ombros e quadril precisam aparecer.",
+  squat:"Celular em pé, uns 2 a 3 m à sua frente, virado para você. Corpo inteiro na tela."
 };
 function openEx(k){
   exKey=k;show("ex");SFX.open();
@@ -666,11 +678,16 @@ function toggleGPS(){
 function hav(a,b){const R=6371000,t=x=>x*Math.PI/180,dl=t(b.latitude-a.latitude),dn=t(b.longitude-a.longitude),h=Math.sin(dl/2)**2+Math.cos(t(a.latitude))*Math.cos(t(b.latitude))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
 
 /* ================= camera vision ================= */
-const Pose={lm:null,loading:null,stream:null,raf:0,st:null,facing:"user"};
+const Pose={lm:null,loading:null,stream:null,raf:0,st:null,devId:null};
+/* Front-facing counting: each exercise is a body ratio measured against your own starting position (calibrated when you hold still),
+   so distance to the phone and body size don't matter. q >= 1 = full rep depth, q <= .36 = back at the start. */
 const RULE={
-  push:{a:["sh","el","wr"],pts:["sh","el","wr","hp","an"],work:95,rest:150,low:"Desça mais: peito perto do chão.",start:"Fique em posição de prancha, braços estendidos.",post:t=>t<40},
-  squat:{a:["hp","kn","an"],pts:["sh","hp","kn","an"],work:100,rest:158,low:"Agache mais: coxas paralelas ao chão.",start:"Fique de pé, de lado para a câmera.",post:t=>t>50},
-  sit:{a:["sh","hp","kn"],pts:["sh","hp","kn"],work:75,rest:112,low:"Suba mais o tronco.",start:"Deite com os joelhos dobrados.",post:t=>t<45}
+  push:{pts:[11,12,15,16],val:(P,sw)=>((P[15].y+P[16].y)/2-(P[11].y+P[12].y)/2)/sw,q:(v,b)=>(1-v/b)/.55,ok0:v=>v>.3,hi:[[11,13,15],[12,14,16]],
+    low:"Desça mais: peito perto do chão.",start:"Fique em prancha, braços estendidos, de frente para a câmera e parado."},
+  squat:{pts:[11,12,23,24,25,26],val:(P,sw)=>((P[25].y+P[26].y)/2-(P[23].y+P[24].y)/2)/sw,q:(v,b)=>(1-v/b)/.55,ok0:v=>v>.4,hi:[[23,25,27],[24,26,28]],
+    low:"Agache mais: coxas paralelas ao chão.",start:"Fique de pé, de frente para a câmera, corpo inteiro na tela e parado."},
+  sit:{pts:[11,12,23,24],val:(P,sw)=>((P[23].y+P[24].y)/2-(P[11].y+P[12].y)/2)/sw,q:(v,b)=>(v-b)/.7,ok0:()=>true,hi:[[11,23,25],[12,24,26]],
+    low:"Suba mais o tronco.",start:"Deite com os joelhos dobrados, cabeça para longe do celular, e fique parado."}
 };
 const L={sh:11,el:13,wr:15,hp:23,kn:25,an:27},R={sh:12,el:14,wr:16,hp:24,kn:26,an:28};
 const EDGES=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,31],[28,32],[0,11],[0,12]];
@@ -693,16 +710,19 @@ async function startCam(){
   $("#cfs").hidden=false;hud();msg("Abrindo câmera…");$("#gFill").style.height="0";
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){camFail("Este navegador não libera a câmera aqui. Abra o Sistema pelo endereço próprio no Safari.");return}
   let stream;
-  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:Pose.facing,width:{ideal:720},height:{ideal:1280}},audio:false})}
+  try{stream=await navigator.mediaDevices.getUserMedia({video:Pose.devId?{deviceId:{exact:Pose.devId},width:{ideal:640},height:{ideal:480}}:{facingMode:"user",width:{ideal:640},height:{ideal:480}},audio:false})}
   catch(e){camFail(e&&e.name==="NotAllowedError"?"Câmera bloqueada. Libere em Ajustes › Safari › Câmera.":"Não consegui abrir a câmera aqui.");return}
   if(!camOn()){stream.getTracks().forEach(t=>t.stop());return}
   Pose.stream=stream;keepAwake(true);
   const v=$("#vid");v.srcObject=stream;try{await v.play()}catch(e){}
-  const mir=Pose.facing==="user";v.classList.toggle("mirror",mir);$("#cv").classList.toggle("mirror",mir);
+  const tr=stream.getVideoTracks()[0],set=tr.getSettings?tr.getSettings():{};
+  try{const cap=tr.getCapabilities&&tr.getCapabilities();if(cap&&cap.zoom&&set.zoom>cap.zoom.min)await tr.applyConstraints({advanced:[{zoom:cap.zoom.min}]})}catch(e){}
+  const mir=set.facingMode?set.facingMode==="user":/front|frontal|facetime/i.test(tr.label||"")||!Pose.devId;
+  v.classList.toggle("mirror",mir);$("#cv").classList.toggle("mirror",mir);
   msg("Carregando a visão do Sistema…");
   try{await preloadPose()}catch(e){msg("Não consegui carregar a visão. Conte pelos botões.","r");return}
   if(!Pose.stream)return;
-  Pose.st={phase:"rest",moving:false,bad:false,ema:null,seen:performance.now(),ready:false,readyN:0,lastRep:0,active:false};
+  Pose.st={phase:"rest",moving:false,bad:false,ema:null,seen:performance.now(),ready:false,cal:[],base:null,lastRep:0,active:false,maxQ:0};
   loop();
   await countdown();
   if(Pose.st)Pose.st.active=true;
@@ -722,7 +742,14 @@ function stopCam(){
   Pose.st=null;
 }
 $("#cEnd").addEventListener("click",()=>{SFX.tap();stopCam()});
-$("#cSwitch").addEventListener("click",async()=>{SFX.tap();Pose.facing=Pose.facing==="user"?"environment":"user";if(Pose.raf)cancelAnimationFrame(Pose.raf);if(Pose.stream){Pose.stream.getTracks().forEach(t=>t.stop());Pose.stream=null}await startCam()});
+$("#cSwitch").addEventListener("click",async()=>{ // cycles every camera, including the ultra-wide
+  SFX.tap();let list=[];try{list=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput")}catch(e){}
+  if(list.length<2){msg("Só encontrei uma câmera.","r");return}
+  const curId=Pose.stream&&Pose.stream.getVideoTracks()[0].getSettings().deviceId;
+  const i=Math.max(0,list.findIndex(d=>d.deviceId===curId));const nx=list[(i+1)%list.length];Pose.devId=nx.deviceId;
+  if(Pose.raf)cancelAnimationFrame(Pose.raf);if(Pose.stream){Pose.stream.getTracks().forEach(t=>t.stop());Pose.stream=null}
+  await startCam();if(nx.label)msg("Câmera: "+nx.label);
+});
 function ang(a,b,c,W,H){const x1=(a.x-b.x)*W,y1=(a.y-b.y)*H,x2=(c.x-b.x)*W,y2=(c.y-b.y)*H;return Math.abs(Math.atan2(x1*y2-y1*x2,x1*x2+y1*y2)*180/Math.PI)}
 const vis=p=>p&&(p.visibility==null?1:p.visibility);
 function loop(){
@@ -745,41 +772,46 @@ function loop(){
 function draw(ctx,lm,W,H,hi,col){
   ctx.save();ctx.lineCap="round";ctx.lineWidth=Math.max(3,W/150);ctx.strokeStyle="rgba(170,235,255,.9)";ctx.shadowColor="#5cc8ff";ctx.shadowBlur=16;
   for(const[a,b]of EDGES){if(vis(lm[a])<.45||vis(lm[b])<.45)continue;ctx.beginPath();ctx.moveTo(lm[a].x*W,lm[a].y*H);ctx.lineTo(lm[b].x*W,lm[b].y*H);ctx.stroke()}
-  if(hi){ctx.lineWidth=Math.max(6,W/80);ctx.strokeStyle=col;ctx.shadowColor=col;ctx.beginPath();ctx.moveTo(lm[hi[0]].x*W,lm[hi[0]].y*H);ctx.lineTo(lm[hi[1]].x*W,lm[hi[1]].y*H);ctx.lineTo(lm[hi[2]].x*W,lm[hi[2]].y*H);ctx.stroke()}
+  if(hi&&hi.every(i=>vis(lm[i])>.4)){ctx.lineWidth=Math.max(6,W/80);ctx.strokeStyle=col;ctx.shadowColor=col;ctx.beginPath();ctx.moveTo(lm[hi[0]].x*W,lm[hi[0]].y*H);ctx.lineTo(lm[hi[1]].x*W,lm[hi[1]].y*H);ctx.lineTo(lm[hi[2]].x*W,lm[hi[2]].y*H);ctx.stroke()}
   ctx.fillStyle="#f2fbff";ctx.shadowColor="#8fe3ff";
   for(const i of[0,11,12,13,14,15,16,23,24,25,26,27,28]){if(vis(lm[i])<.45)continue;ctx.beginPath();ctx.arc(lm[i].x*W,lm[i].y*H,Math.max(4,W/120),0,7);ctx.fill()}
   ctx.restore();
 }
 function analyze(lm,W,H,ctx){
   const r=RULE[exKey],st=Pose.st;if(!r)return;
-  const sides=[L,R].filter(s=>r.pts.every(p=>vis(lm[s[p]])>.55));
-  if(!sides.length){draw(ctx,lm,W,H);if(performance.now()-st.seen>900)msg("Mostre o corpo inteiro, de lado para a câmera.","r");return}
+  if(r.pts.some(i=>vis(lm[i])<.55)){draw(ctx,lm,W,H);if(performance.now()-st.seen>900)msg(exKey==="squat"?"Afaste o celular: preciso ver do ombro ao joelho.":"Preciso ver seus ombros "+(exKey==="push"?"e mãos.":"e quadril."),"r");return}
   st.seen=performance.now();
-  const s=sides.sort((a,b)=>r.pts.reduce((t,p)=>t+vis(lm[b[p]])-vis(lm[a[p]]),0))[0];
-  const raw=sides.reduce((t,x)=>t+ang(lm[x[r.a[0]]],lm[x[r.a[1]]],lm[x[r.a[2]]],W,H),0)/sides.length;
-  st.ema=st.ema==null?raw:st.ema*.5+raw*.5;const m=st.ema;
-  const tdeg=Math.abs(Math.atan2((lm[s.hp].y-lm[s.sh].y)*H,(lm[s.hp].x-lm[s.sh].x)*W)*180/Math.PI),tilt=Math.min(tdeg,180-tdeg);
-  const prog=Math.max(0,Math.min(1,(r.rest-m)/(r.rest-r.work)));
-  $("#gFill").style.height=Math.round(prog*100)+"%";$("#gauge").classList.toggle("hit",m<=r.work);
-  const col=st.bad?"#ff3d50":m<=r.work?"#74ff8f":"#a6eaff";
-  draw(ctx,lm,W,H,[s[r.a[0]],s[r.a[1]],s[r.a[2]]],col);
-  if(!st.active)return;
-  if(!st.ready){
-    if(m>r.rest-5&&r.post(tilt)){if(++st.readyN>10){st.ready=true;msg("Posição detectada. Pode começar!","g");SFX.tap()}}
-    else{st.readyN=0;msg(r.start)}
+  const P=lm.map(p=>({x:p.x*W,y:p.y*H}));
+  const sw=Math.hypot(P[11].x-P[12].x,P[11].y-P[12].y);
+  if(sw<12){draw(ctx,lm,W,H);msg("Fique mais perto da câmera.","r");return}
+  const raw=r.val(P,sw);st.ema=st.ema==null?raw:st.ema*.5+raw*.5;const v=st.ema;
+  const side=vis(lm[r.hi[0][1]])>=vis(lm[r.hi[1][1]])?r.hi[0]:r.hi[1];
+  if(!st.active){draw(ctx,lm,W,H,side,"#a6eaff");return}
+  if(!st.ready){ // calibrate on your own starting position
+    st.cal.push(v);if(st.cal.length>14)st.cal.shift();
+    const mn=Math.min(...st.cal),mx=Math.max(...st.cal),mean=st.cal.reduce((t,x)=>t+x,0)/st.cal.length;
+    const still=st.cal.length>=14&&(exKey==="sit"?mx-mn<.15:(mx-mn)/Math.abs(mean)<.12);
+    draw(ctx,lm,W,H,side,"#a6eaff");
+    if(still&&r.ok0(mean)){st.base=st.cal.slice().sort((a,b)=>a-b)[7];st.ready=true;msg("Posição calibrada. Pode começar!","g");SFX.go()}
+    else msg(r.start);
     return;
   }
-  if(exKey==="push"&&(st.moving||st.phase==="work")){const body=ang(lm[s.sh],lm[s.hp],lm[s.an],W,H);if(body<150){if(!st.bad)msg("Quadril caído: mantenha o corpo reto.","r");st.bad=true}}
-  if(exKey==="squat"&&st.phase==="work"&&tilt<35&&!st.bad){st.bad=true;msg("Tronco caindo demais: peito para cima.","r")}
+  const q=r.q(v,st.base);
+  $("#gFill").style.height=Math.round(Math.max(0,Math.min(1,q))*100)+"%";$("#gauge").classList.toggle("hit",q>=1);
+  if(exKey==="squat"&&st.phase==="work"&&vis(lm[27])>.5&&vis(lm[28])>.5&&!st.bad){ // knees caving in, seen from the front
+    const kn=Math.abs(P[25].x-P[26].x),an=Math.abs(P[27].x-P[28].x);if(an>0&&kn<an*.7){st.bad=true;msg("Joelhos para dentro: empurre para fora.","r")}}
+  draw(ctx,lm,W,H,side,st.bad?"#ff3d50":q>=1?"#74ff8f":"#a6eaff");
   if(st.phase==="rest"){
-    if(m<r.work){st.phase="work";if(!st.bad)msg("Agora suba!","g")}
-    else if(m<r.rest-22)st.moving=true;
-    else if(m>r.rest&&st.moving){st.moving=false;st.bad=false;msg(r.low+" Essa não contou.","r");popBad()}
-  }else if(m>r.rest){
+    if(q<.2)st.base=st.base*.97+v*.03; // follow small shifts of position
+    st.maxQ=Math.max(st.maxQ,q);
+    if(q>=1){st.phase="work";if(!st.bad)msg("Agora volte!","g")}
+    else if(q>.6)st.moving=true;
+    else if(q<=.36&&st.moving){st.moving=false;st.maxQ=0;msg(r.low+" Essa não contou.","r");popBad()}
+  }else if(q<=.36){
     const now=performance.now();
     if(st.bad){msg("Execução errada. Essa não contou.","r");popBad()}
     else if(now-st.lastRep>450){st.lastRep=now;addAmount(exKey,1,true);popGood();msg(["Boa!","Perfeita.","Isso!","Execução limpa.","Continue!"][today()[exKey]%5],"g")}
-    st.phase="rest";st.moving=false;st.bad=false;
+    st.phase="rest";st.moving=false;st.bad=false;st.maxQ=0;
   }
 }
 function popGood(){const p=$("#pop");p.textContent="+1";p.className="pop";void p.offsetWidth;p.className="pop go"}
